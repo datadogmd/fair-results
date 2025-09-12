@@ -1,7 +1,7 @@
 ---
 title: "MN 2025 Results"
 author: "MaDuSa"
-date: "2025-09-01"
+date: "2025-09-11"
 output: html_document
 ---
 
@@ -12,18 +12,14 @@ knitr::opts_chunk$set(echo = TRUE)
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 
 ```{r libraries}
+suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(pdftools))
-# library(rJava)
-# library(tabulapdf)
-# library(readr)
-# library(R.utils)
- library(stringr)
-# library(writexl)
+suppressPackageStartupMessages(library(stringr))
 ```
 
 ```{r markers}
-year <- "2025"
-mnResultsPageTitle <- paste(year, "MINNESOTA STATE FAIR RESULTS", sep = "")
+
+resultsPageHeadTail <- c("MINNESOTA STATE FAIR", "Page")
 creativeActivity <- "Creative Activities:"
 em_dash <- " \u2014 "
 twoSpaces <- "  "
@@ -55,7 +51,7 @@ runnerUp <- "runner-up"
 #pdfPath <- "D:/data/state fair/mn"
 pdfPath <- "C:/Users/mdusa/Documents/mdusaire50/analytics/data/mn"
 fileList <- dir(pdfPath)
-wholePage <- pdftools::pdf_text(paste(pdfPath, fileList[4], sep = "/"))
+wholePage <- pdftools::pdf_text(paste(pdfPath, fileList[3], sep = "/"))
 
 ```
 
@@ -63,33 +59,295 @@ pageLines is approximately twice as large as wholePage
 
 Some classes, such as Sweepstakes, may be missing "Entries in class:". I add and entry for these rows.
 
- Get class info
+Get class info
 
- The class info contains:
-    * class code (which may be different every year)
-    * class name
-    * class qualifiers
-    * class entries count
+The class info contains:
+* class code (which may be different every year)
+* class name
+* class qualifiers
+* class entries count
+
+```{r functions}
+
+insertMissingDescriptor <- function(pageLines, missingDescriptorIndex) {
+  
+  arrayLength <- length(pageLines)
+  nShifts <- length(missingDescriptorIndex)
+  
+  if (nShifts > 0) {
+    for (i in 1:nShifts) {
+      pageLines[(missingDescriptorIndex[i] + 1):(arrayLength + 1)] <-
+        pageLines[missingDescriptorIndex[i]:arrayLength]
+      pageLines[missingDescriptorIndex[i]] <- "None"
+      
+      # Update target rows to account for new row inserted above.
+      missingDescriptorIndex[i + 1] <- missingDescriptorIndex[i + 1] + i
+      
+      # Update arrayLength to account for newly inserted row.
+      arrayLength <- length(pageLines)
+    }
+  }
+  return(pageLines)
+}
+
+
+multiLineMerge <- function(pageLines, targetLines) {
+  
+  nTargetLines <- length(targetLines)
+  if (nTargetLines != 0) {
+    linesToMerge <- targetLines - 1
+    
+    for (i in 1:nTargetLines) {
+      insertClassDescriptorHere <- max(unlist(gregexpr(entryCountFlag, pageLines[targetLines[i] - 1])
+      )
+      ) - 1
+      pageLines[targetLines[i] - 1] <- 
+        paste0(substr(pageLines[targetLines[i] - 1], 1,
+                      insertClassDescriptorHere), " ",
+               pageLines[targetLines[i]], " ",
+               substr(pageLines[targetLines[i] - 1],
+                      (insertClassDescriptorHere + 1),
+                      nchar(pageLines[targetLines[i] - 1])
+               )
+        )
+    }
+    
+    # Removed now redundant lines in multi-line descriptors
+    pageLines <- pageLines[-targetLines]
+  }
+  return(pageLines)
+}
+
+
+
+getFirstWinners <- function(pageLines) {
+  
+  # Get indices for first position in each list of winners
+  
+  winnerLines <- which(grepl("^[0-9] {3}", pageLines))
+  winnerLinesDiff <- diff(c(0,winnerLines))
+  
+  # pageLines[winnerLines[winnerLinesDiff != 1]]
+  
+  return(winnerLines[winnerLinesDiff != 1])
+}
+
+```
+
+
+
+
+```{r get year remove head and tail}
+
+pageLines <- unlist(strsplit(wholePage, "\n")) # using base-R
+lengthPageLines <- length(pageLines)
+
+# Remove leading blanks
+
+# pageLines <- trimws(pageLines, which = "left")
+
+# Identify head and tail rows
+
+pageHeadIndex <- which(grepl(resultsPageHeadTail[1], pageLines))
+pageTailIndex <- which(grepl(resultsPageHeadTail[2], pageLines))
+
+year <- strsplit(pageLines[pageHeadIndex[1]], " ")[[1]][1]
+activity <- strsplit(pageLines[pageHeadIndex[1] + 1], ": ")[[1]][2]
+
+# Remove head and tail rows
+
+pageLines <- pageLines[-sort(c(pageHeadIndex, pageHeadIndex + 1, pageTailIndex))]
+lengthPageLines <- length(pageLines)
+
+```
+
+
+
+```{r get class type}
+
+# Detect classType
+
+classType <- pageLines[grep(entryCountFlag, pageLines)[1]] %>%
+  strsplit(split = entryCountFlag)
+classType <- str_trim(strsplit(classType[[1]][2], ":")[[1]][1], side = "both")
+classTypeTitle <- str_to_title(classType) # If you don't capitalize, then words like "Cloth" trigger unwanted actions.
+
+classDelimiter <- paste0(classTypeTitle, ".*", "\u2014")
+
+```
+
+
+```{r add entry count tag where missing}
+
+classRows <- grepl(classDelimiter, pageLines) # Row numbers for Class information
+classRowIndex <- which(classRows)
+# length(classRowIndex)
+
+missingEntryCount <- is.na(str_match(pageLines[classRows], entryCountFlag))
+
+# Rows with no "Entries in" flag
+
+noClassEntryCount <- pageLines[classRows][missingEntryCount]
+
+pageLines[classRows][missingEntryCount] <- paste(noClassEntryCount, " ", entryCountFlag, " ",
+                                                 classType, ": ", "1", sep = "")
+
+```
+
+
+
+```{r merge split line descriptions}
+
+# Merge split lines.  It appears that split line class descriptions are non-empty lines with less than 2 blanks at the beginning of the string.
+
+blankLines <- pageLines == ""
+multiLines <- !grepl("^[[:blank:]]{2}", pageLines) & !classRows & !blankLines
+
+# The lines immediately following the Class descriptor with one or fewer blanks is likely part of a multi-line descriptor. A blank line immediately following the Class descriptor usually corresponds to a missing secondary class descriptor.  These are considered later.
+
+multiLineRow <- (which(multiLines) - 1) %in% classRowIndex
+
+targetLines <- which(multiLines)[multiLineRow]
+
+pageLines <- multiLineMerge(pageLines, targetLines)
+
+classRows <- grepl(classDelimiter, pageLines) # Row numbers for Class information
+classRowIndex <- which(classRows)
+
+```
+
+
+```{r add missing secondary class descriptor}
+
+# Find empty lines or winner rows immediately following a Class row.
+
+secondDescriptor <- rep(FALSE, length(pageLines))
+secondDescriptor[which(classRows) + 1] <- TRUE
+
+blankLines <- pageLines == ""
+
+winnerRows <- grepl("^[0-9] {3}", trimws(pageLines, which = "left"))
+
+# Blank lines and winner rows immediately following the Class row should be replaced with the class identifier:  None
+
+missingDescriptor <- (winnerRows | blankLines) & secondDescriptor
+
+pageLines <- insertMissingDescriptor(pageLines, which(missingDescriptor))
+
+```
+
+
+
+
+
+
+```{r remove blank lines and split winner rows}
+blankLines <- pageLines == ""
+pageLines <- pageLines[-which(blankLines)]
+sum(pageLines == "")
+
+
+#winnerRows <- grepl("^[0-9] {3}", trimws(pageLines, which = "left"))
+#which(blankLines)
+#pageLines[-which(blankLines)]
+
+ 
+
+```
+
+
+
+```{r}
+
+splitLineIndex <- which(str_count(pageLines, "\\(") - str_count(pageLines, "\\)") != 0)
+
+pageLines[splitLineIndex]
+
+#####
+
+
+
+
+####
+
+
+
+pageLines <- mergeSplitLines(pageLines)
+
+# Remove blank lines
+
+#pageLines <- pageLines[-which(pageLines == "")]
+
+# Detect classType
+
+classType <- pageLines[grep(entryCountFlag, pageLines)[1]] %>%
+  strsplit(split = entryCountFlag)
+classType <- str_trim(strsplit(classType[[1]][2], ":")[[1]][1], side = "both")
+classTypeTitle <- str_to_title(classType) # If you don't capitalize, then words like "Cloth" trigger unwanted actions.
+
+classDelimiters <- paste0(classTypeTitle, ".*", "\u2014")
+
+classRows <- grepl(classDelimiters, pageLines) # Row numbers for Class information
+classRowIndex <- which(classRows)
+# pageLinesNoBlanks[classRowFlags]
+
+missingEntryCountFlag <- is.na(str_match(pageLines[classRowFlags],entryCountFlag))
+
+# Rows with no "Entries in" flag
+
+noClassEntryCount <- pageLines[classRowFlags][missingEntryCountFlag]
+
+pageLines[classRowFlags][missingEntryCountFlag] <- paste(noClassEntryCount, " ", entryCountFlag, " ",
+                                                         classType, ": ", "1", sep = "")
+
+# Merge multi-line class descriptions.  If the line immediately following the classDelimiter begins in column 1, assume it is a continuation of the class description that extended to multiple lines. The descriptions don't usually occupy more than 2 lines.
+
+# No more than 1 leading blank space
+
+grepl(" {1,}", pageLines[classRowFlags + 1])
+c(1:lengthPageLines) %in% (classRowFlags + 1)
+
+classRowFlags
+
+which(c(1:lengthPageLines) %in% (classRowFlags + 1))
+pageLines[grep(" {1,}", pageLines[c(1:lengthPageLines) %in% (classRowFlags + 1)])]
+grep("^[^[:blank:]]", "no blanks at the beginning")
+grep("^[[:blank:]]", "   no blanks at the beginning")
+grepl("^[[:blank:]]{2}", "no blanks at the beginning")
+grepl("^[[:blank:]]{2}", " no blanks at the beginning")
+grepl("^[[:blank:]]{2}", "  no blanks at the beginning")
+grepl("^[[:blank:]]{2}", "   no blanks at the beginning")
+
+winnerRowFlags <- grepl("^[0-9] {3}", pageLines)
+
+pageLines[!(grepl("^[[:blank:]]{2}", pageLines[classRowFlags + 1]))]
+
+# get a list of classRowFlag+1 as TRUE and FALSE
+
+
+
+
+
+
+
+
+```
+
 
 
 
 ```{r parse pdf as pageLines}
 
- # Using wholePage might be more efficient than breaking the page into lines, but I break the page into lines and proceed with pageLines.
+# Using wholePage might be more efficient than breaking the page into lines, but I break the page into lines and proceed with pageLines.
 
 # pageLines <- read_lines(wholePage) # using readr function
 
-pageLines <- unlist(strsplit(wholePage, "\n")) # using base-R
+# This process might remove the EOL character from the end of the line of text.
 
- # This process might remove the EOL character from the end of the line of text.
-
-# Remove blank lines
-
-# pageLinesNoBlanks <- pageLines[-which(pageLines == "")]
 
 # Might not want to remove the blank lines yet.
 
-pageLinesNoBlanks <- pageLines
+# pageLinesNoBlanks <- pageLines
 
 # In the original process I removed the extra spaces using str_squish, but those spaces may be useful for field separation later.Remove extra blank spaces
 
@@ -97,82 +355,48 @@ pageLinesNoBlanks <- pageLines
 
 # Add "Entries in class: 1" to rows that are missing the "Entries in class:" info
 
-# Detect classType
- 
- classType <- pageLinesNoBlanks[grep(entryCountFlag, pageLinesNoBlanks)[1]] %>%
-   strsplit(split = entryCountFlag)
- classType <- str_trim(strsplit(classType[[1]][2], ":")[[1]][1], side = "both")
 
 
- # Add "Entries in" information to any Class rows that do not contain this flag.  These usually correspond to special classes which only have one entry. Add and "Entries in" with a count of 1.
+# Add "Entries in" information to any Class rows that do not contain this flag.  These usually correspond to special classes which only have one entry. Add and "Entries in" with a count of 1.
 
- classTypeTitle <- str_to_title(classType) # If you don't capitalize, then words like "Cloth" trigger unwanted actions.
- 
-  classDelimiters <- paste0(classTypeTitle, ".*", "\u2014")
+classTypeTitle <- str_to_title( ) # If you don't capitalize, then words like "Cloth" trigger unwanted actions.
 
- classRows <- grep(classDelimiters, pageLinesNoBlanks) # Row numbers for Class information
- # pageLinesNoBlanks[classRows]
- 
- missingEntryCountFlag <- is.na(str_match(pageLinesNoBlanks[classRows],entryCountFlag))
- 
- # Rows with no "Entries in" flag
- 
- noClassEntryCount <- pageLinesNoBlanks[classRows][missingEntryCountFlag]
+classDelimiters <- paste0(classTypeTitle, ".*", "\u2014")
 
- pageLinesNoBlanks[classRows][missingEntryCountFlag] <- paste(noClassEntryCount, " ", entryCountFlag, " ",
-                                                              classType, ": ", "1", sep = "")
+classRowIndex <- grep(classDelimiters, pageLines) # Row numbers for Class information
+# pageLinesNoBlanks[classRowIndex]
 
- # Some class descriptions extend more than a single line. Merge the multi-line class descriptors into a single line. Assuming the last final comments on the class description line contains text in parentheses, un-paired parentheses may identify these "mid-line carriage returns. Paste the extra text before the Entries in class: flag, and delete the extra line in pageLinesNoBlanks.  This does not account for multi-line descriptions that are not in parentheses, or those with matching pairs of parentheses.
- 
- splitLineDescriptors <- which(str_count(pageLinesNoBlanks, "\\(") - str_count(pageLinesNoBlanks, "\\)") != 0)
+missingEntryCountFlag <- is.na(str_match(pageLinesNoBlanks[classRowIndex],entryCountFlag))
 
- if (length(splitLineDescriptors) != 0) {
-oddIndices <- seq(1, length(splitLineDescriptors), 2)
-evenIndices <- seq(2, length(splitLineDescriptors), 2)
+# Rows with no "Entries in" flag
 
-for (i in oddIndices) {
-  pageLinesNoBlanks[splitLineDescriptors[i]]
-  pageLinesNoBlanks[splitLineDescriptors[i + 1]]
-  insertClassDescriptorHere <- max(unlist(gregexpr(entryCountFlag,
-                                       pageLinesNoBlanks[splitLineDescriptors[i]]
-                                              )
-                                      )
-                               ) - 1
-  pageLinesNoBlanks[splitLineDescriptors[i]] <- 
-    paste0(substr(pageLinesNoBlanks[splitLineDescriptors[i]], 1,
-                  insertClassDescriptorHere),
-           pageLinesNoBlanks[splitLineDescriptors[i + 1]],
-           substr(pageLinesNoBlanks[splitLineDescriptors[i]],
-                  insertClassDescriptorHere,
-                  nchar(pageLinesNoBlanks[splitLineDescriptors[i]])
-                  )
-           )
-}
+noClassEntryCount <- pageLinesNoBlanks[classRowIndex][missingEntryCountFlag]
 
-# Removed now redundant lines in multi-line descriptors
-pageLinesNoBlanks <- pageLinesNoBlanks[-splitLineDescriptors[evenIndices]]
- }
- 
-#pageLinesNoBlanks
+pageLinesNoBlanks[classRowIndex][missingEntryCountFlag] <- paste(noClassEntryCount, " ", entryCountFlag, " ",
+                                                                 classType, ": ", "1", sep = "")
+
+
 ```
+
+
 
 
 ```{r none listed class identifier}
 
-# Recalculate classRows because some rows have been removed from pageLinesNoBlanks during the multi-line descriptor manipulation step.
+# Recalculate classRowIndex because some rows have been removed from pageLinesNoBlanks during the multi-line descriptor manipulation step.
 
-classRows <- grep(classDelimiters, pageLinesNoBlanks) # Row numbers for Class information
- # The lines below the line with the class identifier contains a class "keyword".  Separate this out.
+classRowIndex <- grep(classDelimiters, pageLinesNoBlanks) # Row numbers for Class information
+# The lines below the line with the class identifier contains a class "keyword".  Separate this out.
 
-# The next lines following the classRows contain the additional class keyword
-# pageLinesNoBlanks[classRows]
-classKeyRows <- classRows + 1
+# The next lines following the classRowIndex contain the additional class keyword
+# pageLinesNoBlanks[classRowIndex]
+classKeyRows <- classRowIndex + 1
 #pageLinesNoBlanks[classKeyRows]
 
 # For Classes that do not have a keyword or blank row between the "Class" flag and the winner list will erroneously tag the first place info as the class keyword row.  These could be identified by having a "1" in the second column.  These rows could be excluded by first inserting a keyword of "None listed" above the first winner row, and re-parsing the text.
 
-insertNoneListedHere <- classKeyRows[which(lengths((str_split(pageLinesNoBlanks[classKeyRows], pattern =
-                                                   winnerListSeparator))) > 1)]
+insertNoneListedHere <- classKeyRows[which(lengths((str_split(pageLinesNoBlanks[classKeyRows],
+                                                              pattern = winnerListSeparator))) > 1)]
 
 arrayLength <- length(pageLinesNoBlanks)
 nShifts <- length(insertNoneListedHere)
@@ -182,151 +406,128 @@ if (nShifts > 0) {
     pageLinesNoBlanks[(insertNoneListedHere[i] + 1):(arrayLength + 1)] <-
       pageLinesNoBlanks[insertNoneListedHere[i]:arrayLength]
     pageLinesNoBlanks[insertNoneListedHere[i]] <- "None listed"
-
-        # Update target rows to account for new row inserted above.
+    
+    # Update target rows to account for new row inserted above.
     insertNoneListedHere[i + 1] <- insertNoneListedHere[i + 1] + i
-
-        # Update arrayLength to account for new row inserted above.
+    
+    # Update arrayLength to account for new row inserted above.
     arrayLength <- length(pageLinesNoBlanks)
   }
 }
 
-length(pageLinesNoBlanks)
+# length(pageLinesNoBlanks)
 
-classRows <- grep(classDelimiters, pageLinesNoBlanks) # Row numbers for Class information
-pageLinesNoBlanks[classRows]
-classKeyRows <- classRows + 1
-pageLinesNoBlanks[classKeyRows]
+classRowIndex <- grep(classDelimiters, pageLinesNoBlanks) # Row numbers for Class information
+# pageLinesNoBlanks[classRowIndex]
+classKeyRows <- classRowIndex + 1
+# pageLinesNoBlanks[classKeyRows]
 
 #pageLinesNoBlanks
 ```
+
+
+
 
 
 ```{r winners list identifier}
 # Remove leading blanks
 pageLinesNoBlanks <- trimws(pageLinesNoBlanks, which = "left")
 
-firstPlaceWinners <- which(grepl(paste0("^", "1"), pageLinesNoBlanks))
-secondPlaceWinners <- which(grepl(paste0("^", "2"), pageLinesNoBlanks))
-classRows <- grep(classDelimiters, pageLinesNoBlanks)
+# Select winner listings
+
+winnerRowFlags <- grepl("^[[:blank:]]{2}[0-9]", pageLines)
+classRows <- grepl(classDelimiters, pageLines)
+
+head(winnerRowFlags)
+
+# Split winnerRows
+
+# Add comma delimiters to winnerRows
+
+csvWinnerRows <- gsub(" {4,}", ", ", pageLinesNoBlanks[winnerRowFlags])
+head(csvWinnerRows)
+
+# Number of commas in the winner rows is equivalent to the number of columns in the row.  Most will have 3 commas: Rank, Firstname Lastname, City Name, State Abbreviation.  Some may have multiple participants per line, or a guild name.  Find the maximum for the document and add the extra columns + 2 before the City Name.
+
+commaCountWinnerRows <- str_count(pageLinesNoBlanks[winnerRowFlags], ",")
+
+pageLinesNoBlanks[which(commaCountWinnerRows > 1)]
+
+splitWinnerRows <- strsplit(pageLinesNoBlanks[winnerRowFlags], " {4,}")
+
+lengths(splitWinnerRows)
+head(splitWinnerRows)
 
 
-pageLinesNoBlanks[firstPlaceWinners]
+firstColumns <- lapply(splitWinnerRows,
+                       function(x) {
+                         l = length(x)
+                         x[1:(l-1)]
+                       })
 
-classKeyRows[which(lengths(str_split(pageLinesNoBlanks[classKeyRows], pattern =
-                                                   winnerListSeparator)) > 1)]
+head(firstColumns)
+
+replacementColumns <- lapply(splitWinnerRows,
+                             function(x, n=6) {
+                               l = length(x)
+                               paste(strrep(" , ", (n-l)), x[l])
+                             }
+)
+
+head(replacementColumns)
+
+newWinnerRowsList <- mapply(c, firstColumns, replacementColumns, SIMPLIFY = TRUE)
 
 
 
-pageLinesNoBlanks[which(lengths(str_split(pageLinesNoBlanks[], pattern = winnerListSeparator)) > 2)]
+head(newWinnerRowsList)
 
 
-lineNumber <- 10
-pageLinesNoBlanks[lineNumber]
-firstNonBlankChar <- regexpr("\\S", pageLinesNoBlanks[lineNumber])[1]
-firstChar <- substr(pageLinesNoBlanks[lineNumber], firstNonBlankChar, firstNonBlankChar)
-firstChar
+mapply(c, firstColumns, replacementColumns, SIMPLIFY = TRUE)
 
 
+newWinnerRows <- lapply(newWinnerRowsList, function(x) {
+  paste(x, collapse = ",")
+}
+)
+
+head(newWinnerRows)
+
+# The newWinnerRows should each have 6 columns.  Rows with more columns are due to:
+# data entry errors that include a zipcode at the end of the winner row. Fortunately, this extra information can be ignored since it doesn't include any useful information.  It is unclear which other column position errors may arise in the data sets.
+
+
+```
+
+
+```{r class info}
+# Extract Class info for each set of winners
+
+head(classRowFlags)
 
 
 
 
 ```
 
+```{r use lapply to process the list directly}
 
-```{r column dividers}
-# replace large spaces with a comma
-This is the next stage of parsing
+# Data must be in the structure:
+# Class
+# Class identifier
+# Winner rows
 
+processFairResults <- function(x) {
+  # Is this a Class row or 
+}
 
+# Remove leading blanks
+pageLinesNoBlanks <- trimws(pageLinesNoBlanks, which = "left")
 
+# Select winner listings
 
-```
-
-```{r}
-
-# classDelimiters <- c("\u2014|,|//|and|or|and/or|(|)|(?<=class:)|(?<=lot:)")
-# classDelimiters <- c("\u2014|,|and|or|(?<=class:)|(?<=lot:)")
-# classDelimiters <- c("\u2014|,|and|or|(?<=Entries in class:)|(?<=Entries in lot:)")
- classDelimiters <- c("\u2014|(Entries in class:)|(Entries in lot:)")
- 
-winnersDelimiters <- c(",")
-
-
-#  Identify the Class rows and parse these for class info
-
-# matchInfo <- gregexpr(classDelimiters, pageLinesNoBlanks)
-
-# Get class info
-
-# The class info contains:
-#    class code (which may be different every year)
-#    class name
-#    class qualifiers
-#    class entries count
-
-#matchInfo <- gregexpr(classHeader, pageLinesNoBlanks)
+winnerRowFlags <- grepl("^[0-9] {3}", pageLinesNoBlanks)
+classRowFlags <- grepl(classDelimiters, pageLinesNoBlanks)
 
 
-sapply(pageLinesNoBlanks[], str_count())
-
-# str_match(pageLinesNoBlanks[classRows], " 1 ")
-# pageLinesNoBlanks[classRows[1]+1:classRows[2]-1]
-# winnerSteps <- diff(classRows, lag = 1)
-# pageLinesNoBlanks[4]
-# classRows[2] - classRows[1]
-# pageLinesNoBlanks[6]
-
-# Locate rows with no "Entries in" info.
-
- 
-
-
-
-classInfo <- str_split(pageLinesSquish[classRows], classType)
-
-head(classInfo)
-
-classInfoEntriesCount <- str_split(sapply(classInfo, "[[", 2), classDelimiters)
-
-classInfoIds <- sapply(classInfoEntriesCount, "[[", 1) # as.numeric()
-classInfoCategories <- sapply(classInfoEntriesCount, "[[", 2) # str_trim(x, side = "both")
-# str_trim(classInfoCategories, side = "both")
-classInfoEntryCounts <- sapply(classInfoEntriesCount, "[[", 3) # as.numeric()
-
-
-
-
-classInfoCategories
-
-pageLinesNoBlankLines <- classInfo[-which(classInfo[][] == "")]
-
-str_split(pageLinesNoBlankLines, winnersDelimiters)
-
-step1 <- strsplit(pageLinesNoBlankLines[searchMatch[]], delimiters)
-step2 <- strsplit(step1[[1]][2], classEntryCount)
-step3 <- strsplit(step2[[1]][1], delimeters)
-
-searchMatch[1]
-length(searchMatch)
-
-matchInfo[[searchMatch[1:length(searchMatch)]]][]
-matchInfo[noMatch] <- NULL
-
-regmatches(pageLines[], matchInfo)
-
-matchCount <- length(matchInfo[[1]])
-matchInfoValue <- matchInfo
-
-# Modify starting position to first character after searchString
-
-matchInfoValue[[1]][1:matchCount] <- matchInfo[[1]][1:matchCount] + nchar(searchString)
-
-# Modify the match.length to the length of the desired string
-
-attr(matchInfoValue[[1]], "match.length")[1:matchCount] <- targetInfoLength
-regmatches(pageLines[], matchInfoValue)
-
-
-```
+lapply(pageLinesNoBlanks, function(x))
