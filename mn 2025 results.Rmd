@@ -22,6 +22,7 @@ suppressPackageStartupMessages(library(stringr))
 resultsPageHeadTail <- c("MINNESOTA STATE FAIR", "Page")
 creativeActivity <- "Creative Activities"
 em_dash <- " \u2014 "
+lower_doublequote <- "\u201E"
 winnerListSeparator = " {3,}" # split by 3 or more blank spaces
 stateSeparator <- ", "
 eol <- "\n"
@@ -48,7 +49,7 @@ runnerUp <- "runner-up"
 #pdfPath <- "D:/data/state fair/mn"
 pdfPath <- "C:/Users/mdusa/Documents/mdusaire50/analytics/data/mn"
 fileList <- dir(pdfPath)
-wholePage <- pdftools::pdf_text(paste(pdfPath, fileList[1], sep = "/"))
+wholePage <- pdftools::pdf_text(paste(pdfPath, fileList[3], sep = "/"))
 
 ```
 
@@ -139,7 +140,7 @@ regex_between <- function(start_str, end_str, page_ln) {
   
   # Find the starting and ending positions of the match
   match_info <- regexpr(regex_pattern, page_ln, perl = TRUE)
-extracted_string <- substr(page_line, 
+  extracted_string <- substr(page_line, 
                              attr(match_info, "capture.start")[1], 
                              attr(match_info, "capture.start")[1] + attr(match_info, "capture.length")[1] - 1)
   extracted_string <- trimws(extracted_string, which = "both")
@@ -171,6 +172,13 @@ activity <- strsplit(pageLines[pageHeadIndex[1] + 1], "[:-]")[[1]][2]
 
 pageLines <- pageLines[-sort(c(pageHeadIndex, pageHeadIndex + 1, pageTailIndex))]
 lengthPageLines <- length(pageLines)
+
+```
+
+
+```{r typo cleanup}
+# Replace repeat commas with single comma
+pageLines <- gsub(lower_doublequote, ",",pageLines)
 
 ```
 
@@ -245,62 +253,46 @@ missingDescriptor <- (winnerRows | blankLines) & secondDescriptor
 
 pageLines <- insertMissingDescriptor(pageLines, which(missingDescriptor))
 
+# Remove leading blanks from all lines.
+
+pageLines <- trimws(pageLines, which = "left")
+
 ```
 
 
 
 ```{r remove blank lines and split winner rows}
+# Remove blank lines
 blankLines <- pageLines == ""
 pageLines <- pageLines[-which(blankLines)]
 
-winnerRows <- grepl("^[0-9] {3}", trimws(pageLines, which = "left"))
-#which(blankLines)
-#pageLines[-which(blankLines)]
+# Add comma delimiters to winner rows
+winnerRows <- grepl("^[0-9]", pageLines)
+
+pageLines[winnerRows] <- gsub(" {3,}", ",", pageLines[winnerRows])
 
 ```
 
 
-```{r winners list identifier}
+```{r insert extra commas in winner rows}
 
-# Add comma delimiters to winnerRows
-winnerRows <- grepl("^[0-9] {3}", trimws(pageLines, which = "left"))
-winnerRowIndex <- which(winnerRows)
-pageLines[winnerRows] <- gsub(" {4,}", ", ", trimws(pageLines[winnerRows], which = "left"))
+# Number of commas in the winner rows is equivalent to the number of columns in the row.  Most will have 3 commas: Rank, Firstname Lastname, City Name, State Abbreviation.  Some may have multiple participants per line, or a guild name.  Find the maximum for the document and add the n - l + 1  columns before the City Name.
 
-# pageLines[which(winnerRows)] <- gsub(" {4,}", ", ", pageLines[which(winnerRows)])
-
-# Number of commas in the winner rows is equivalent to the number of columns in the row.  Most will have 3 commas: Rank, Firstname Lastname, City Name, State Abbreviation.  Some may have multiple participants per line, or a guild name.  Find the maximum for the document and add the extra columns + 2 before the City Name.
-
-splitWinnerRows <- strsplit(pageLines[winnerRows], ",")
-
-firstColumns <- lapply(splitWinnerRows,
-                       function(x) {
-                         l = length(x)
-                         x[1:(l-2)]
-                       })
-
-replacementColumns <- lapply(splitWinnerRows,
-                             function(x, n=6) {
-                               l = length(x)
-                               paste(strrep(" , ", (n-l)), x[l-1], " , ", x[l])
-                             }
-)
-
-newWinnerRowsList <- mapply(c, firstColumns, replacementColumns, SIMPLIFY = TRUE)
-
-newWinnerRows <- lapply(newWinnerRowsList, function(x) {
-  paste(x, collapse = ",")
+winnerRows <- grepl("^[0-9]", pageLines)
+winnerRowsIndex <- which(winnerRows)
+comma_count <- str_count(pageLines[winnerRows], ",")
+comma_index <- gregexpr(",", pageLines[winnerRows])
+comma_list <- lapply(comma_index,c)
+winner_count <- length(which(winnerRows))
+n <- 6 #number of commas winner rows should contain
+for (i in 1:winner_count) {
+  l <- comma_count[i]
+  comma_idx <- comma_list[[i]][l - 1]
+  str_sub(pageLines[winnerRowsIndex[i]], comma_idx, comma_idx) <- strrep(",", (n - l + 1))
 }
-)
 
-pageLines[winnerRows] <- newWinnerRows
+pageLines[winnerRowsIndex]
 
-pageLines <- unlist(pageLines)
-
-# Winner rows should now each have 6 columns.  Rows with more columns are due to:
-# data entry errors that include a zipcode at the end of the winner row. We will either ignore this additional information or ignore the whole entry.
-
-pageLines
 ```
 
 
@@ -309,11 +301,6 @@ pageLines
 # Associate each class with the secondary descriptor and a list of winners
 
 class_rows_grepl <- grepl(classDelimiter, pageLines) # Row numbers for Class information
-
-winnerRows <- grepl("^[0-9] {3}", trimws(pageLines, which = "left"))
-winnerRowIndex <- which(winnerRows)
-pageLines[winnerRows] <- gsub(" {4,}", ", ", pageLines[winnerRows])
-
 
 class_rows <- which(class_rows_grepl)
 n_class_rows <- length(class_rows)
@@ -325,44 +312,44 @@ for (i in 1:n_class_rows) {
   cr_end <- cr_start + class_group_steps[i]
   cr_seq <- seq(cr_start, cr_end)
   page_line <- pageLines[cr]
-classInfo <- function(page_ln, i) {
-
-  page_line <- pageLines[cr]
- pageLines[class_seq] 
-  class_rows
-  # First line of the Class group contains the class code, class description (long) and entrant count.
-  start_string <- classTypeTitle
-  end_string <- em_dash  
-  classCode <- regex_between(start_string, end_string, page_line)
-  classCode
-  start_string <- em_dash
-  end_string <- entryCountFlag
-class_description_long <- regex_between(start_string, end_string, page_line)
-class_description_long
- 
-  classCount <- strsplit(page_line, ": ")[[1]][2] |>
-                  trimws(, which = "both")
-  classCount
-  # The second line of the Class group contains the secondary class description (short)
-  page_line <- pageLines[classRowIndex[i + 1]]
-
-   class_group <- seq(from = i, length.out = classStep[i])
-   n_class_group <- length(class_group)
-   
-   
-   for (j in 3:n_class_group) {
-     
-     
-   }
-   
-   
-   
-  pageLines
-  startString <- "Supreme"
-  endString <- "Award"
-  
-
-}
+  classInfo <- function(page_ln, i) {
+    
+    page_line <- pageLines[cr]
+    pageLines[class_seq] 
+    class_rows
+    # First line of the Class group contains the class code, class description (long) and entrant count.
+    start_string <- classTypeTitle
+    end_string <- em_dash  
+    classCode <- regex_between(start_string, end_string, page_line)
+    classCode
+    start_string <- em_dash
+    end_string <- entryCountFlag
+    class_description_long <- regex_between(start_string, end_string, page_line)
+    class_description_long
+    
+    classCount <- strsplit(page_line, ": ")[[1]][2] |>
+      trimws(, which = "both")
+    classCount
+    # The second line of the Class group contains the secondary class description (short)
+    page_line <- pageLines[classRowIndex[i + 1]]
+    
+    class_group <- seq(from = i, length.out = classStep[i])
+    n_class_group <- length(class_group)
+    
+    
+    for (j in 3:n_class_group) {
+      
+      
+    }
+    
+    
+    
+    pageLines
+    startString <- "Supreme"
+    endString <- "Award"
+    
+    
+  }
   
 }
 ```
