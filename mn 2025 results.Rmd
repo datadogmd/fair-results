@@ -51,6 +51,12 @@ pdfPath <- "C:/Users/mdusa/Documents/mdusaire50/analytics/data/mn"
 fileList <- dir(pdfPath)
 wholePage <- pdftools::pdf_text(paste(pdfPath, fileList[4], sep = "/"))
 
+
+# Read pdf_info
+
+pdf_info_df <- pdf_data(paste(pdfPath, fileList[4], sep = "/"), font_info = TRUE)
+
+
 ```
 
 pageLines is approximately twice as large as wholePage
@@ -363,7 +369,18 @@ for (i in 1:n_class_rows) {
 ```
 
 
-```{r}
+```{r pdftools info}
+
+# Extract low-level data with font information
+pdf_info_df <- pdf_data("MN_State_Fair_Results.pdf", font_info = TRUE)
+
+# Combine pages and filter for font names containing "Bold"
+# (Note: Check pdf_fonts() first to see exactly how bold fonts are named in your file)
+bold_results <- bind_rows(pdf_info_df) %>%
+  filter(grepl("Bold|Medi|Black", font_name, ignore.case = TRUE))
+
+# View your bolded entries
+head(bold_results$text)
 
 
 ```
